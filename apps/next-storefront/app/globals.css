@@ -1,0 +1,27 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top right, rgba(203, 47, 47, 0.08), transparent 24rem),
+    linear-gradient(to bottom, #f6f6f1, #f9faf8 24rem, #ffffff);
+  color: #101314;
+}
+
+a {
+  text-underline-offset: 0.2em;
+}
+
+::selection {
+  background: rgba(203, 47, 47, 0.18);
+}

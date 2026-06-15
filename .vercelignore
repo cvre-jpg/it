@@ -1,0 +1,8 @@
+node_modules/
+.next/
+dist/
+.vercel/
+.wrangler/
+.env
+*.log
+apps/next-storefront/node_modules/

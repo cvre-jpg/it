@@ -1,0 +1,18 @@
+{
+  "name": "Shop ICT Gadgets",
+  "short_name": "Shop ICT",
+  "description": "Premium electronics in Kenya, with super admin order alerts and quick mobile access.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#FFFFFF",
+  "theme_color": "#E30613",
+  "icons": [
+    {
+      "src": "/app-icon.jpg",
+      "sizes": "1024x1024",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ]
+}
