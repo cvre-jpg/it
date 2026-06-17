@@ -161,16 +161,18 @@ export function AdminOrdersPage() {
               lineIndex,
               product_name: title,
               supplier_id: "",
-              serial_code: line.serial_number.trim(),
+              serial_code: "",
               catalogue_id: "",
             });
-            throw new Error("Complete custom product details");
+            throw new Error("Complete custom product stock details");
           }
 
           return {
             id: line.product_id || undefined,
             title,
-            serial_number: line.serial_number.trim() || customInventory?.serial_code || undefined,
+            serial_number: line.product_id
+              ? line.serial_number.trim() || undefined
+              : customInventory?.serial_code || undefined,
             qty: Math.max(1, Number(line.qty) || 1),
             price: Math.max(0, Number(line.price) || 0),
             custom_inventory: customInventory ?? undefined,
@@ -288,9 +290,9 @@ export function AdminOrdersPage() {
   const pageStart = filtered.length === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1;
   const pageEnd = Math.min(currentPage * PAGE_SIZE, filtered.length);
 
-  const fetchSerialOptions = async (productId: string, selectedSerial = "") => {
+  const fetchSerialOptions = async (productId: string, selectedSerial = "", force = false) => {
     if (!productId) return;
-    if (serialOptionsByProduct[productId]) {
+    if (!force && serialOptionsByProduct[productId]) {
       if (selectedSerial) {
         setSerialOptionsByProduct((current) => ({
           ...current,
@@ -360,7 +362,7 @@ export function AdminOrdersPage() {
           : entry,
       ),
     );
-    await fetchSerialOptions(product.id);
+    await fetchSerialOptions(product.id, "", true);
   };
 
   const openCustomProductDialog = (lineIndex: number) => {
@@ -370,7 +372,7 @@ export function AdminOrdersPage() {
       lineIndex,
       product_name: line.title.trim(),
       supplier_id: line.custom_inventory?.supplier_id ?? "",
-      serial_code: line.serial_number.trim() || line.custom_inventory?.serial_code || "",
+      serial_code: line.custom_inventory?.serial_code ?? "",
       catalogue_id: line.custom_inventory?.catalogue_id ?? "",
     });
   };
@@ -425,6 +427,18 @@ export function AdminOrdersPage() {
     );
     closeCustomProductDialog();
   };
+
+  useEffect(() => {
+    const productIds = Array.from(
+      new Set(lines.map((line) => line.product_id).filter(Boolean)),
+    );
+
+    productIds.forEach((productId) => {
+      if (!serialOptionsByProduct[productId] && !loadingSerialProductIds[productId]) {
+        void fetchSerialOptions(productId);
+      }
+    });
+  }, [lines, serialOptionsByProduct, loadingSerialProductIds]);
 
   useEffect(() => {
     const productId = getSearchString(orderPrefillSearch.product_id);
@@ -696,9 +710,9 @@ export function AdminOrdersPage() {
                                   setActiveProductSearchIndex(null);
                                   void selectOrderProduct(index, product);
                                 }}
-                                className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left transition-colors hover:bg-[#F5F5F7]"
+                                className="flex w-full rounded-xl px-3 py-2 text-left transition-colors hover:bg-[#F5F5F7]"
                               >
-                                <span className="min-w-0 pr-3">
+                                <span className="min-w-0">
                                   <span className="block truncate text-sm font-medium text-[#111111]">{product.title}</span>
                                   <span
                                     className={cn(
@@ -712,9 +726,6 @@ export function AdminOrdersPage() {
                                         ? "Listed product"
                                         : "Catalogue product"}
                                   </span>
-                                </span>
-                                <span className="shrink-0 text-xs font-semibold text-[#4B5563]">
-                                  {formatKES(Number(product.price ?? 0))}
                                 </span>
                               </button>
                             ))}
@@ -755,20 +766,19 @@ export function AdminOrdersPage() {
                       </select>
                     ) : (
                       <input
-                        value={line.serial_number}
-                        onChange={(event) =>
-                          setLines((current) =>
-                            current.map((entry, entryIndex) =>
-                              entryIndex === index ? { ...entry, serial_number: event.target.value } : entry,
-                            ),
-                          )
-                        }
+                        value={line.custom_inventory ? line.serial_number : ""}
+                        readOnly
+                        disabled
                         placeholder={
-                          line.product_id && loadingSerialProductIds[line.product_id]
+                          line.custom_inventory
+                            ? "Custom stock serial"
+                            : line.product_id && loadingSerialProductIds[line.product_id]
                             ? "Loading serials..."
-                            : "Serial number"
+                            : line.product_id
+                              ? "No available serials"
+                              : "Inventory serial only"
                         }
-                        className={inputCls}
+                        className={`${inputCls} bg-[#F8FAFC] text-muted-foreground`}
                       />
                     )}
 
@@ -848,7 +858,7 @@ export function AdminOrdersPage() {
       <Dialog open={customProduct.lineIndex != null} onOpenChange={(open) => !open && closeCustomProductDialog()}>
         <DialogContent className="w-[90vw] rounded-2xl">
           <DialogHeader>
-            <DialogTitle>Custom inventory product</DialogTitle>
+            <DialogTitle>Custom product</DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
             <Field label="Product name">
@@ -1207,7 +1217,6 @@ function withSelectedSerialOption(
 type OrderProductSuggestion = {
   id: string;
   title: string;
-  price: number;
   source: "inventory" | "catalog" | "catalogue";
   serialCount?: number;
   catalogueId?: string | null;
@@ -1227,7 +1236,6 @@ function buildInventoryProductOptions(intakeRecords: any[], products: any[]): Or
     grouped.set(id, {
       id,
       title,
-      price: Number(product?.price ?? record.stock_price ?? 0),
       source: "inventory",
       serialCount: (current?.serialCount ?? 0) + 1,
     });
@@ -1262,7 +1270,6 @@ function getOrderProductSuggestions(
       suggestions.set(id, {
         id,
         title,
-        price: Number(product.product_price ?? 0),
         source: "catalogue",
         catalogueId,
       });
@@ -1276,7 +1283,6 @@ function getOrderProductSuggestions(
       suggestions.set(id, {
         id,
         title: String(product.title ?? "Product"),
-        price: Number(product.price ?? 0),
         source: "catalog",
       });
     });
@@ -1666,7 +1672,21 @@ async function renderReceiptCanvas(receipt: ReceiptData) {
     8,
   );
 
-  return canvas;
+  return cropCanvasHeight(canvas, Math.min(height, Math.ceil(thankYouTop + 82)));
+}
+
+function cropCanvasHeight(canvas: HTMLCanvasElement, targetHeight: number) {
+  const height = Math.max(1, Math.min(canvas.height, targetHeight));
+  if (height >= canvas.height) return canvas;
+
+  const croppedCanvas = document.createElement("canvas");
+  croppedCanvas.width = canvas.width;
+  croppedCanvas.height = height;
+  const croppedContext = croppedCanvas.getContext("2d");
+  if (!croppedContext) return canvas;
+
+  croppedContext.drawImage(canvas, 0, 0, canvas.width, height, 0, 0, canvas.width, height);
+  return croppedCanvas;
 }
 
 function measureWrappedLines(value: string, maxChars: number) {

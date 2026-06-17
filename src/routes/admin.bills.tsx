@@ -109,7 +109,7 @@ function AdminBills() {
       toast.error("Supplier, product, serial number, and amount are required");
       return;
     }
-    if (selectedStocks.some((stock: any) => stock.remaining_stock_price == null)) {
+    if (selectedStocks.some((stock: any) => needsSetPrice(stock))) {
       toast.error("Set price for selected serial numbers first");
       return;
     }
@@ -168,7 +168,7 @@ function AdminBills() {
       return;
     }
 
-    if (stock.remaining_stock_price == null) {
+    if (needsSetPrice(stock)) {
       if (!isSuperAdmin) {
         toast.error("Only super admin can set prices");
         return;
@@ -284,14 +284,17 @@ function AdminBills() {
                     const stockIntakeId = String(stock.stock_intake_id);
                     const checked = form.stock_intake_ids.includes(stockIntakeId);
                     return (
-                      <label
+                      <button
+                        type="button"
                         key={stockIntakeId}
-                        className="flex cursor-pointer items-center justify-between gap-3 rounded-lg px-2 py-2 text-sm transition hover:bg-[#F5F5F7]"
+                        onClick={() => toggleSerial(stock, !checked)}
+                        className="flex w-full cursor-pointer items-center justify-between gap-3 rounded-lg px-2 py-2 text-left text-sm transition hover:bg-[#F5F5F7] focus:outline-none focus:ring-2 focus:ring-primary/30"
+                        aria-pressed={checked}
                       >
                         <span className="min-w-0">
                           <span className="block truncate font-mono text-xs">{stock.serial_code}</span>
                           <span className="text-xs text-muted-foreground">
-                            {stock.remaining_stock_price == null
+                            {needsSetPrice(stock)
                               ? "Set price needed"
                               : `Balance ${formatKES(Number(stock.remaining_stock_price ?? 0))}`}
                           </span>
@@ -299,10 +302,11 @@ function AdminBills() {
                         <input
                           type="checkbox"
                           checked={checked}
-                          onChange={(event) => toggleSerial(stock, event.target.checked)}
+                          readOnly
+                          tabIndex={-1}
                           className="h-4 w-4 rounded border-border"
                         />
-                      </label>
+                      </button>
                     );
                   })
                 )}
@@ -557,6 +561,10 @@ function isWithinDays(value: string, days: number) {
   const diff = start.getTime() - target.getTime();
   const diffDays = diff / (1000 * 60 * 60 * 24);
   return diffDays >= 0 && diffDays <= days - 1;
+}
+
+function needsSetPrice(stock: any) {
+  return stock.set_price == null || stock.remaining_stock_price == null;
 }
 
 const inputCls = "w-full rounded-xl border bg-background px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-primary/30";

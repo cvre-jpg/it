@@ -22,10 +22,10 @@ import {
 export const Route = createFileRoute("/admin/catalogue")({ component: AdminCataloguePage });
 
 const ITEM_OPTIONS = ["Laptop", "Monitor", "Printer", "Desktop", "Phone", "Accessory", "Other"];
-const PROCESSOR_OPTIONS = ["Core i3", "Core i5", "Core i7", "Core i9", "Ultra 5", "Ultra 7", "Ultra 9", "Ryzen 3", "Ryzen 5", "Ryzen 7", "M1", "M2", "M3"];
+const PROCESSOR_OPTIONS = ["Core i3", "Core i5", "Core i7", "Core i9", "Ultra 5", "Ultra 7", "Ultra 9", "Ryzen 3", "Ryzen 5", "Ryzen 7", "M1", "M2", "M3", "M4", "M5"];
 const GENERATION_OPTIONS = ["6th Gen", "7th Gen", "8th Gen", "9th Gen", "10th Gen", "11th Gen", "12th Gen", "13th Gen", "14th Gen", "15th Gen", "16th Gen"];
-const RAM_OPTIONS = ["4GB", "8GB", "16GB", "32GB", "64GB"];
-const STORAGE_OPTIONS = ["128GB SSD", "256GB SSD", "512GB SSD", "1TB SSD", "2TB SSD", "500GB HDD", "1TB HDD"];
+const RAM_OPTIONS = ["4GB", "8GB", "16GB", "24GB", "32GB", "36GB", "48GB", "64GB"];
+const STORAGE_OPTIONS = ["128GB SSD", "256GB SSD", "512GB SSD", "1TB SSD", "2TB", "2TB SSD", "500GB HDD", "1TB HDD"];
 const MONITOR_SIZE_OPTIONS = ["19 inch", "22 inch", "24 inch", "27 inch", "32 inch", "34 inch"];
 const GENERIC_SPEC_OPTIONS = ["Standard", "Pro", "Max", "Refurbished", "Brand new"];
 
@@ -318,8 +318,17 @@ export function AdminCataloguePage() {
                 paginatedCatalogue.map((entry) => (
                   <tr key={entry.id} className="border-t">
                     <td className="min-w-0 px-3 py-4 font-semibold text-foreground sm:px-5">
-                      <div className="truncate" title={entry.product_name}>
-                        {entry.product_name}
+                      <div className="flex min-w-0 items-center gap-2">
+                        <div className="truncate" title={entry.product_name}>
+                          {entry.product_name}
+                        </div>
+                        <span
+                          className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                            entry.product_id ? "bg-[#ECFDF3] text-[#15803D]" : "bg-[#FFF7ED] text-[#C2410C]"
+                          }`}
+                        >
+                          {entry.product_id ? "Listed" : "Unlisted"}
+                        </span>
                       </div>
                     </td>
                     <td className="px-3 py-4 sm:px-5">

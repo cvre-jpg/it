@@ -596,10 +596,12 @@ export function AdminProductsPage() {
             setForm={setForm}
             categories={categories}
             catalogue={catalogue}
+            products={products}
             selectedSubcategoryValues={selectedSubcategoryValues}
             suggestedSubcategories={suggestedSubcategories}
             brandOptions={brandOptions}
             save={save}
+            onEditProduct={startEdit}
           />
         </div>
       ) : null}
@@ -612,11 +614,13 @@ export function AdminProductsPage() {
               setForm={setForm}
               categories={categories}
               catalogue={catalogue}
+              products={products}
               selectedSubcategoryValues={selectedSubcategoryValues}
               suggestedSubcategories={suggestedSubcategories}
               brandOptions={brandOptions}
               save={save}
               onClose={() => setOpen(false)}
+              onEditProduct={startEdit}
             />
           </div>
         </div>
@@ -634,27 +638,32 @@ function ProductEditor({
   setForm,
   categories,
   catalogue,
+  products,
   selectedSubcategoryValues,
   suggestedSubcategories,
   brandOptions,
   save,
   onClose,
+  onEditProduct,
 }: {
   form: Form;
   setForm: Dispatch<SetStateAction<Form>>;
   categories: any[];
+  products: any[];
   catalogue: Array<{
     id: string;
     title: string;
     item: string;
     specs: Record<string, string>;
     product_name: string;
+    product_id?: string | null;
   }>;
   selectedSubcategoryValues: string[];
   suggestedSubcategories: string[];
   brandOptions: string[];
   save: (draft?: Form) => Promise<void>;
   onClose?: () => void;
+  onEditProduct: (product: any) => void;
 }) {
   const [brandMenuOpen, setBrandMenuOpen] = useState(false);
   const [productMenuOpen, setProductMenuOpen] = useState(false);
@@ -695,6 +704,12 @@ function ProductEditor({
           )
           .slice(0, 10)
       : [];
+  const findListedProduct = (entry: { id: string; product_id?: string | null; product_name: string }) =>
+    products.find((product: any) =>
+      (entry.product_id && String(product.id) === String(entry.product_id)) ||
+      String(product.catalogue_id ?? "") === String(entry.id) ||
+      String(product.title ?? "").toLowerCase() === String(entry.product_name ?? "").toLowerCase(),
+    );
 
   const setCoverImage = (index: number) => {
     if (index <= 0 || index >= form.images.length) return;
@@ -745,28 +760,61 @@ function ProductEditor({
             />
             {productSuggestions.length > 0 ? (
               <div className="absolute z-30 mt-2 max-h-72 w-full overflow-y-auto rounded-xl border border-border bg-background shadow-lg">
-                {productSuggestions.map((entry) => (
-                  <button
-                    key={entry.id}
-                    type="button"
-                    onMouseDown={(event) => {
-                      event.preventDefault();
-                      setForm({
-                        ...form,
-                        catalogue_id: entry.id,
-                        title: entry.product_name,
-                        brand: entry.title,
-                        subcategory: entry.item,
-                        specs: JSON.stringify(entry.specs, null, 2),
-                      });
-                      setProductMenuOpen(false);
-                    }}
-                    className="block w-full px-3 py-2.5 text-left text-sm text-foreground transition hover:bg-[#fff8f9]"
-                  >
-                    <span className="block truncate font-medium">{entry.product_name}</span>
-                    <span className="mt-0.5 block truncate text-xs text-muted-foreground">{entry.item}</span>
-                  </button>
-                ))}
+                {productSuggestions.map((entry) => {
+                  const listedProduct = findListedProduct(entry);
+                  const isListed = Boolean(listedProduct);
+
+                  return (
+                    <div
+                      key={entry.id}
+                      className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm text-foreground transition hover:bg-[#fff8f9]"
+                    >
+                      <button
+                        type="button"
+                        disabled={isListed}
+                        onMouseDown={(event) => {
+                          event.preventDefault();
+                          if (isListed) return;
+                          setForm({
+                            ...form,
+                            catalogue_id: entry.id,
+                            title: entry.product_name,
+                            subcategory: entry.item,
+                          });
+                          setProductMenuOpen(false);
+                        }}
+                        className="min-w-0 flex-1 text-left disabled:cursor-default"
+                      >
+                        <span className="flex min-w-0 items-center gap-2">
+                          <span className="truncate font-medium">{entry.product_name}</span>
+                          <span
+                            className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                              isListed ? "bg-[#ECFDF3] text-[#15803D]" : "bg-[#FFF7ED] text-[#C2410C]"
+                            }`}
+                          >
+                            {isListed ? "Listed" : "Unlisted"}
+                          </span>
+                        </span>
+                        <span className="mt-0.5 block truncate text-xs text-muted-foreground">{entry.item}</span>
+                      </button>
+                      {isListed ? (
+                        <button
+                          type="button"
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                            setProductMenuOpen(false);
+                            onEditProduct(listedProduct);
+                          }}
+                          className="inline-flex h-8 shrink-0 items-center gap-1 rounded-full border border-border px-3 text-xs font-semibold text-foreground transition hover:border-[#e92d48] hover:text-[#e92d48]"
+                        >
+                          <Pencil className="h-3.5 w-3.5" /> Edit
+                        </button>
+                      ) : (
+                        <span className="shrink-0 rounded-full bg-[#e92d48] px-3 py-1.5 text-xs font-semibold text-white">List</span>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             ) : productMenuOpen && normalizedProductSearch.length > 0 ? (
               <div className="absolute z-30 mt-2 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm text-muted-foreground shadow-lg">
