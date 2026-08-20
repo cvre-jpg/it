@@ -1,4 +1,4 @@
-const CACHE_VERSION = "v4";
+const CACHE_VERSION = "v5";
 const APP_SHELL_CACHE = `shopict-app-shell-${CACHE_VERSION}`;
 const PAGE_CACHE = `shopict-pages-${CACHE_VERSION}`;
 const ASSET_CACHE = `shopict-assets-${CACHE_VERSION}`;
@@ -39,7 +39,7 @@ self.addEventListener("fetch", (event) => {
   const isExternalAsset = EXTERNAL_ASSET_HOSTS.has(url.hostname);
 
   if (request.mode === "navigate") {
-    event.respondWith(handleNavigationRequest(request, isSameOrigin && isNetworkFirstNavigation(url)));
+    event.respondWith(handleNavigationRequest(request));
     return;
   }
 
@@ -86,19 +86,7 @@ self.addEventListener("notificationclick", (event) => {
   );
 });
 
-function isNetworkFirstNavigation(url) {
-  return url.pathname.startsWith("/admin") || url.pathname.startsWith("/auth");
-}
-
-async function handleNavigationRequest(request, networkFirst) {
-  if (!networkFirst) {
-    const cachedPage = await caches.match(request);
-    if (cachedPage) return cachedPage;
-
-    const appShell = await caches.match("/");
-    if (appShell) return appShell;
-  }
-
+async function handleNavigationRequest(request) {
   try {
     const response = await fetch(request);
     if (isCacheableResponse(response)) {
