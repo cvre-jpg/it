@@ -131,8 +131,12 @@ export function Footer() {
             </div>
           </div>
         </div>
-        <div className="border-t py-5 text-center text-xs text-muted-foreground">
-          © {new Date().getFullYear()} Shop ICT Gadgets. All rights reserved.
+        <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 border-t px-6 py-5 text-center text-xs text-muted-foreground">
+          <span>© {new Date().getFullYear()} Shop ICT Gadgets. All rights reserved.</span>
+          <span aria-hidden="true" className="hidden sm:inline">•</span>
+          <Link to="/returns-policy" className="underline-offset-4 transition-colors hover:text-foreground hover:underline">
+            Returns &amp; Exchanges Policy
+          </Link>
         </div>
       </footer>
     </>
