@@ -1,4 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
+import { publicCache } from "./public-cache";
 import { CATEGORY_TREE, type MainCategory } from "./category-tree";
 import { detectMainCategory, detectSubcategory } from "./catalog-categorization";
 import csvCatalogSource from "../data/products.csv?raw";
@@ -203,7 +204,12 @@ type InquiryInput = {
 };
 
 const SUBCATEGORY_SEPARATOR = " || ";
-const CATALOG_CACHE_TTL_MS = 1000 * 60 * 30;
+// How often a warm server checks whether the catalog changed. The check is a ~100-byte
+// query; the full catalog (~200 KB) is only downloaded again when something changed.
+const CATALOG_CACHE_TTL_MS = 1000 * 60 * 5;
+// Listing and search only need the start of each description. Full descriptions (about two
+// thirds of the catalog's size) are fetched per product page instead, to save database egress.
+const CATALOG_DESCRIPTION_CHARS = 400;
 const SETTINGS_CACHE_TTL_MS = 1000 * 60 * 30;
 const DEFAULT_WHATSAPP_NUMBER = "+254713869018";
 
@@ -228,19 +234,30 @@ export function stringifySubcategories(values: string[]) {
   return normalized.length > 0 ? normalized.join(SUBCATEGORY_SEPARATOR) : null;
 }
 
-export function normalizeSpecsRecord(specs: Record<string, unknown> | null | undefined) {
-  const normalized =
-    specs && typeof specs === "object" && !Array.isArray(specs)
-      ? Object.fromEntries(Object.entries(specs).map(([key, value]) => [key, String(value)]))
-      : {};
+function formatSpecValue(value: unknown): string {
+  if (value == null) return "";
+  if (Array.isArray(value)) return value.map(formatSpecValue).filter(Boolean).join(", ");
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
 
-  if ("HDD size" in normalized && !("Size" in normalized)) {
-    normalized["Size"] = normalized["HDD size"];
+// Keeps the specs JSON exactly as typed: same keys, same order, values as text.
+// No keys are renamed or merged.
+export function normalizeSpecsRecord(specs: unknown) {
+  let source = specs;
+  if (typeof source === "string") {
+    try {
+      source = JSON.parse(source);
+    } catch {
+      source = {};
+    }
   }
 
-  delete normalized["HDD size"];
+  if (!source || typeof source !== "object" || Array.isArray(source)) return {} as Record<string, string>;
 
-  return normalized as Record<string, string>;
+  return Object.fromEntries(
+    Object.entries(source as Record<string, unknown>).map(([key, value]) => [key, formatSpecValue(value)]),
+  ) as Record<string, string>;
 }
 
 function parseProductRow(row: any): ProductWithCategory {
@@ -283,7 +300,8 @@ function summarizeProduct(product: ProductWithCategory): ProductSummaryWithCateg
     old_price: product.old_price,
     stock_status: product.stock_status,
     category_id: product.category_id,
-    images: product.images,
+    // Cards, cart and wishlist only use the first image; the product page loads the full list.
+    images: (product.images ?? []).slice(0, 1),
     featured: product.featured,
     category_priority: product.category_priority,
     hidden: product.hidden,
@@ -680,7 +698,9 @@ async function loadStoredCatalog() {
 
   const productRows = await sql`
     select
-      p.*,
+      p.id, p.title, p.slug, left(p.description, ${CATALOG_DESCRIPTION_CHARS}) as description, p.brand, p.subcategory, p.price, p.old_price,
+      p.stock_status, p.category_id, p.images, p.specs, p.warranty, p.featured,
+      p.category_priority, p.is_hidden, p.badge, p.created_at, p.updated_at,
       c.name as category_name,
       c.slug as category_slug
     from products p
@@ -736,16 +756,69 @@ async function loadStoredCatalog() {
   return { products, categories };
 }
 
+// Fingerprint of everything the storefront catalog shows. Every admin save sets updated_at,
+// and inserts/deletes change the counts.
+let catalogVersion: string | undefined;
+
+async function readCatalogVersion() {
+  const { getNeonSql } = await import("./neon.server");
+  const sql = getNeonSql();
+  const [row] = await sql`
+    select concat_ws(':',
+      (select count(*) from products), (select max(updated_at) from products),
+      (select count(*) from categories), (select max(updated_at) from categories)
+    ) as version
+  `;
+  return String(row?.version ?? "");
+}
+
 async function loadCatalog() {
   return resolveCachedValue(
     catalogCache,
     CATALOG_CACHE_TTL_MS,
-    () => loadStoredCatalog(),
+    async () => {
+      const version = await readCatalogVersion();
+      if (catalogCache.value !== undefined && catalogVersion === version) {
+        return catalogCache.value;
+      }
+      const fresh = await loadStoredCatalog();
+      catalogVersion = version;
+      fullDescriptions.clear();
+      return fresh;
+    },
     async () => {
       console.warn("Falling back to bundled CSV catalog after catalog fetch failed.");
+      // Forget the version so the next check reloads from the database instead of
+      // treating the CSV fallback as current.
+      catalogVersion = undefined;
       return loadCsvCatalog();
     },
   );
+}
+
+// Full descriptions for product pages, kept until the catalog changes.
+const fullDescriptions = new Map<string, string | null>();
+
+async function withFullDescription<T extends { id: string; description: string | null }>(product: T | null) {
+  if (!product || !product.description || product.description.length < CATALOG_DESCRIPTION_CHARS) {
+    return product;
+  }
+
+  const cached = fullDescriptions.get(product.id);
+  if (cached !== undefined) return { ...product, description: cached };
+
+  try {
+    const { getNeonSql } = await import("./neon.server");
+    const sql = getNeonSql();
+    const [row] = await sql`select description from products where id = ${product.id}`;
+    const description = row ? (row.description ?? null) : product.description;
+    if (fullDescriptions.size > 1000) fullDescriptions.clear();
+    fullDescriptions.set(product.id, description);
+    return { ...product, description };
+  } catch {
+    // Database unavailable (e.g. CSV fallback in use): show what we have.
+    return product;
+  }
 }
 
 async function loadSettingsMap() {
@@ -946,15 +1019,15 @@ async function getRelatedProducts(product: ProductWithCategory | null) {
   };
 }
 
-const fetchProductsServer = createServerFn({ method: "POST" }).handler(async ({ data }) => {
+const fetchProductsServer = createServerFn({ method: "GET" }).middleware([publicCache]).handler(async ({ data }) => {
   return getProducts((data ?? {}) as FetchProductsOptions);
 });
 
-const fetchShopProductsServer = createServerFn({ method: "POST" }).handler(async ({ data }) => {
+const fetchShopProductsServer = createServerFn({ method: "GET" }).middleware([publicCache]).handler(async ({ data }) => {
   return getShopProducts((data ?? {}) as FetchShopProductsOptions);
 });
 
-const fetchHomepageDataServer = createServerFn({ method: "GET" }).handler(async () => {
+const fetchHomepageDataServer = createServerFn({ method: "GET" }).middleware([publicCache]).handler(async () => {
   const settings = await loadSettingsMap();
 
   const [featured, laptops, monitors, smartphones, audio, printers] = await Promise.all([
@@ -980,7 +1053,7 @@ const fetchHomepageDataServer = createServerFn({ method: "GET" }).handler(async 
   } satisfies HomepageData;
 });
 
-const fetchShopPageDataServer = createServerFn({ method: "POST" }).handler(async ({ data }) => {
+const fetchShopPageDataServer = createServerFn({ method: "GET" }).middleware([publicCache]).handler(async ({ data }) => {
   const opts = (data ?? {}) as {
     products: FetchShopProductsOptions;
     searchSuggestions?: FetchShopProductsOptions | null;
@@ -1004,17 +1077,17 @@ const fetchShopPageDataServer = createServerFn({ method: "POST" }).handler(async
   } satisfies ShopPageData;
 });
 
-const fetchProductBySlugServer = createServerFn({ method: "GET" }).handler(async ({ data }) => {
+const fetchProductBySlugServer = createServerFn({ method: "GET" }).middleware([publicCache]).handler(async ({ data }) => {
   const slug = String((data as { slug?: string } | undefined)?.slug ?? "");
   const { products } = await loadCatalog();
 
-  return products.find((product) => product.slug === slug && !product.hidden) ?? null;
+  return withFullDescription(products.find((product) => product.slug === slug && !product.hidden) ?? null);
 });
 
-const fetchProductPageDataServer = createServerFn({ method: "GET" }).handler(async ({ data }) => {
+const fetchProductPageDataServer = createServerFn({ method: "GET" }).middleware([publicCache]).handler(async ({ data }) => {
   const slug = String((data as { slug?: string } | undefined)?.slug ?? "");
   const [catalog, settings] = await Promise.all([loadCatalog(), loadSettingsMap()]);
-  const product = catalog.products.find((item) => item.slug === slug && !item.hidden) ?? null;
+  const product = await withFullDescription(catalog.products.find((item) => item.slug === slug && !item.hidden) ?? null);
 
   return {
     product,
@@ -1023,22 +1096,45 @@ const fetchProductPageDataServer = createServerFn({ method: "GET" }).handler(asy
   } satisfies ProductPageData;
 });
 
-const fetchCategoriesServer = createServerFn({ method: "GET" }).handler(async () => {
+const fetchCategoriesServer = createServerFn({ method: "GET" }).middleware([publicCache]).handler(async () => {
   const { categories } = await loadCatalog();
   return categories;
 });
 
-const fetchWhatsAppNumberServer = createServerFn({ method: "GET" }).handler(async () => {
+const fetchWhatsAppNumberServer = createServerFn({ method: "GET" }).middleware([publicCache]).handler(async () => {
   const settings = await loadSettingsMap();
   return getWhatsAppNumberFromSettings(settings);
 });
 
-const fetchHomepageBannersServer = createServerFn({ method: "GET" }).handler(async () => {
+const fetchHomepageBannersServer = createServerFn({ method: "GET" }).middleware([publicCache]).handler(async () => {
   const settings = await loadSettingsMap();
   return getHomepageBannersFromSettings(settings);
 });
 
+// Public write endpoint: cap submissions per visitor so bots can't flood the database.
+// Per server instance, so it's a brake rather than a hard global limit.
+const INQUIRY_WINDOW_MS = 10 * 60 * 1000;
+const INQUIRY_MAX_PER_WINDOW = 5;
+const inquiryAttempts = new Map<string, { count: number; resetAt: number }>();
+
+function isInquiryRateLimited(key: string) {
+  const now = Date.now();
+  const entry = inquiryAttempts.get(key);
+  if (!entry || entry.resetAt <= now) {
+    if (inquiryAttempts.size > 5000) inquiryAttempts.clear();
+    inquiryAttempts.set(key, { count: 1, resetAt: now + INQUIRY_WINDOW_MS });
+    return false;
+  }
+  entry.count += 1;
+  return entry.count > INQUIRY_MAX_PER_WINDOW;
+}
+
 const submitInquiryServer = createServerFn({ method: "POST" }).handler(async ({ data }) => {
+  const { getRequestIP } = await import("./request.server");
+  if (isInquiryRateLimited(getRequestIP({ xForwardedFor: true }) ?? "unknown")) {
+    throw new Error("Too many requests. Please wait a few minutes and try again.");
+  }
+
   const { getNeonSql } = await import("./neon.server");
   const sql = getNeonSql();
   const inquiry = data as InquiryInput;

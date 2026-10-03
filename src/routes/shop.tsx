@@ -28,6 +28,20 @@ export const Route = createFileRoute("/shop")({
     minPrice: z.string().optional(),
     maxPrice: z.string().optional(),
   }),
+  loaderDeps: ({ search }) => search,
+  // Runs only during server rendering, so crawlers get the product list in the HTML.
+  // In the browser the page keeps loading through useQuery exactly as before.
+  loader: ({ context, deps }) => {
+    if (typeof window !== "undefined") return null;
+    const shopQuery = buildShopQuery(deps, "popular", 1);
+    return context.queryClient
+      .ensureQueryData({
+        queryKey: shopQuery.queryKey,
+        queryFn: () => fetchShopPageData(shopQuery.input),
+        staleTime: 1000 * 60 * 10,
+      })
+      .catch(() => null);
+  },
   component: ShopPage,
   head: ({ match }) => {
     const search = match.search;
@@ -100,6 +114,59 @@ function resolveBannerUrl(url: string) {
   return value.startsWith("/") ? value : `/${value}`;
 }
 
+type ShopSearch = {
+  category?: string;
+  subcategory?: string;
+  q?: string;
+  brands?: string;
+  minPrice?: string;
+  maxPrice?: string;
+};
+
+function buildShopQuery(search: ShopSearch, sortBy: SortValue, page: number) {
+  const categoryGroup = getCategoryGroupBySearchParam(search.category);
+  const selectedSubcategory =
+    categoryGroup && isSubcategoryForMainCategory(categoryGroup.label, search.subcategory)
+      ? search.subcategory
+      : null;
+  const selectedCategoryQuery = categoryGroup?.query;
+  const selectedBrands = String(search.brands ?? "")
+    .split(",")
+    .map((brand) => brand.trim())
+    .filter(Boolean);
+  const normalizedSearchQuery = search.q?.trim() ?? "";
+
+  const input = {
+    products: {
+      categorySlug: selectedCategoryQuery,
+      subcategory: selectedSubcategory ?? undefined,
+      brands: selectedBrands,
+      minPrice: search.minPrice ? Number(search.minPrice) : null,
+      maxPrice: search.maxPrice ? Number(search.maxPrice) : null,
+      search: search.q,
+      sortBy,
+      page,
+      pageSize: 20,
+    },
+    searchSuggestions:
+      normalizedSearchQuery.length > 0
+        ? { search: normalizedSearchQuery, sortBy: "popular" as const, pageSize: 8 }
+        : null,
+    categorySearchSuggestions:
+      selectedCategoryQuery && normalizedSearchQuery.length > 0
+        ? { categorySlug: selectedCategoryQuery, search: normalizedSearchQuery, sortBy: "popular" as const, pageSize: 8 }
+        : null,
+    categorySuggestions: selectedCategoryQuery
+      ? { categorySlug: selectedCategoryQuery, sortBy: "popular" as const, pageSize: 8 }
+      : null,
+  };
+
+  return {
+    queryKey: ["shop-products", selectedCategoryQuery, selectedSubcategory, search.q, search.brands, search.minPrice, search.maxPrice, sortBy, page] as const,
+    input,
+  };
+}
+
 function ShopPage() {
   const navigate = useNavigate({ from: "/shop" });
   const search = Route.useSearch();
@@ -132,44 +199,9 @@ function ShopPage() {
     .split(",")
     .map((brand) => brand.trim())
     .filter(Boolean);
-  const minPrice = search.minPrice ? Number(search.minPrice) : null;
-  const maxPrice = search.maxPrice ? Number(search.maxPrice) : null;
   const normalizedSearchQuery = search.q?.trim() ?? "";
-  const shopProductsRequest = {
-    categorySlug: selectedCategoryQuery,
-    subcategory: selectedSubcategory ?? undefined,
-    brands: selectedBrands,
-    minPrice,
-    maxPrice,
-    search: search.q,
-    sortBy,
-    page,
-    pageSize: 20,
-  } as const;
-  const searchSuggestionsRequest =
-    normalizedSearchQuery.length > 0
-      ? {
-          search: normalizedSearchQuery,
-          sortBy: "popular" as const,
-          pageSize: 8,
-        }
-      : null;
-  const categorySearchSuggestionsRequest =
-    selectedCategoryQuery && normalizedSearchQuery.length > 0
-      ? {
-          categorySlug: selectedCategoryQuery,
-          search: normalizedSearchQuery,
-          sortBy: "popular" as const,
-          pageSize: 8,
-        }
-      : null;
-  const categorySuggestionsRequest = selectedCategoryQuery
-    ? {
-        categorySlug: selectedCategoryQuery,
-        sortBy: "popular" as const,
-        pageSize: 8,
-      }
-    : null;
+  const shopQuery = buildShopQuery(search, sortBy, page);
+  const serverShopPageData = Route.useLoaderData();
 
   const {
     data: shopPageData,
@@ -177,14 +209,10 @@ function ShopPage() {
     isError,
     error,
   } = useQuery({
-    queryKey: ["shop-products", selectedCategoryQuery, selectedSubcategory, search.q, search.brands, search.minPrice, search.maxPrice, sortBy, page],
-    queryFn: () =>
-      fetchShopPageData({
-        products: shopProductsRequest,
-        searchSuggestions: searchSuggestionsRequest,
-        categorySearchSuggestions: categorySearchSuggestionsRequest,
-        categorySuggestions: categorySuggestionsRequest,
-      }),
+    queryKey: shopQuery.queryKey,
+    queryFn: () => fetchShopPageData(shopQuery.input),
+    // Server-rendered data only matches the default view (popular sort, first page).
+    initialData: sortBy === "popular" && page === 1 ? (serverShopPageData ?? undefined) : undefined,
     staleTime: 1000 * 60 * 10,
     gcTime: 1000 * 60 * 60,
     placeholderData: keepPreviousData,
@@ -427,9 +455,9 @@ function ShopPage() {
           />
 
           <main>
-            <h1 className="hidden text-[34px] font-normal leading-none text-[#222222] lg:block">
+            <p className="hidden text-[34px] font-normal leading-none text-[#222222] lg:block">
               {pageTitle}
-            </h1>
+            </p>
 
             {isError ? (
               <div className="mt-4 rounded-[6px] border border-[#f2b7c1] bg-[#fff4f6] px-4 py-3 text-sm text-[#c42544]">

@@ -7,7 +7,7 @@ import { DEFAULT_WHATSAPP_NUMBER } from "@/hooks/use-whatsapp-number";
 import { ArrowLeft, ArrowRight, ArrowUpRight } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import useEmblaCarousel from "embla-carousel-react";
-import { absoluteUrl, buildMetaDescription, buildTitle } from "@/lib/seo";
+import { absoluteUrl, buildMetaDescription, buildTitle, serializeJsonLd } from "@/lib/seo";
 import { buildResponsiveImageAttrs, optimizeImageUrl } from "@/lib/images";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -40,6 +40,17 @@ export const Route = createFileRoute("/")({
     ],
     links: [{ rel: "canonical", href: absoluteUrl("/") }],
   }),
+  // Loading through the query cache puts the data in the server-rendered HTML (no second
+  // request on first visit) and reuses cached data on later visits instead of refetching.
+  // If this fails, return nothing and let the page load its data in the browser as before.
+  loader: ({ context }) =>
+    context.queryClient
+      .ensureQueryData({
+        queryKey: ["homepage-data"],
+        queryFn: () => fetchHomepageData(),
+        staleTime: 1000 * 60 * 10,
+      })
+      .catch(() => null),
   component: HomePage,
 });
 
@@ -137,6 +148,41 @@ function HomepageTabs({
   );
 }
 
+const WEBSITE_STRUCTURED_DATA = {
+  "@context": "https://schema.org",
+  "@type": "WebSite",
+  name: "Shop ICT Gadgets",
+  url: absoluteUrl("/"),
+};
+
+function buildStoreStructuredData(phone: string) {
+  return {
+    "@context": "https://schema.org",
+    "@type": "Store",
+    name: "Shop ICT Gadgets",
+    url: absoluteUrl("/"),
+    logo: absoluteUrl("/logo.png"),
+    image: absoluteUrl("/logo.png"),
+    description:
+      "Laptops, smartphones, monitors, printers, networking gear, CCTV and accessories in Kenya. Order via WhatsApp.",
+    telephone: phone,
+    email: "ictgadgetsshop@gmail.com",
+    address: {
+      "@type": "PostalAddress",
+      streetAddress: "Laxmi Plaza",
+      addressLocality: "Nairobi",
+      addressCountry: "KE",
+    },
+    areaServed: "KE",
+    currenciesAccepted: "KES",
+    sameAs: [
+      "https://www.facebook.com/Shopictgadgets",
+      "https://www.instagram.com/jamesndiba_/",
+      "https://www.tiktok.com/@shop.ict.gadgets",
+    ],
+  };
+}
+
 function HomePage() {
   const {
     data: homepageData,
@@ -146,6 +192,7 @@ function HomePage() {
   } = useQuery({
     queryKey: ["homepage-data"],
     queryFn: () => fetchHomepageData(),
+    initialData: Route.useLoaderData() ?? undefined,
     staleTime: 1000 * 60 * 10,
     gcTime: 1000 * 60 * 60,
   });
@@ -574,6 +621,8 @@ function HomePage() {
 
   return (
     <div className="animate-fade-in">
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: serializeJsonLd(buildStoreStructuredData(waNumber)) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: serializeJsonLd(WEBSITE_STRUCTURED_DATA) }} />
       <section className="site-desktop-width mx-auto w-full px-3 pt-2.5 md:px-5 xl:px-6">
         <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_540px]">
           <article className="group relative h-[172px] overflow-hidden rounded-[10px] bg-[linear-gradient(135deg,#e7f3ff_0%,#cfe6ff_48%,#b7d4ff_100%)] shadow-[0_1px_4px_rgba(0,0,0,0.06)] md:h-[188px]">
@@ -730,7 +779,7 @@ function HomePage() {
                       srcSet={popularBannerAttrs.srcSet}
                       sizes={popularBannerAttrs.sizes}
                       alt={`Best deals banner ${activePopularBannerSlide + 1}`}
-                      loading="eager"
+                      loading="lazy"
                       decoding="async"
                       className="h-full w-full object-cover object-center transition-transform duration-200 ease-[ease] group-hover:scale-[1.02]"
                     />

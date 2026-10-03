@@ -12,9 +12,26 @@ const nitroPreset = isVercelBuild ? "vercel" : null;
 
 // Redirect TanStack Start's bundled server entry to src/server.ts (our SSR error wrapper).
 // @cloudflare/vite-plugin builds from this — wrangler.jsonc main alone is insufficient.
+// Files in public/ aren't content-hashed, so Vercel serves them with max-age=0 and every
+// page view re-requests them. Let browsers keep them; sw.js and the manifest stay fresh.
+const vercelStaticCacheRoutes = [
+  {
+    src: "^/uploads/(.*)$",
+    headers: { "cache-control": "public, max-age=604800, stale-while-revalidate=2592000" },
+    continue: true,
+  },
+  {
+    src: "^/(logo\\.png|app-icon\\.jpg|icon-192\\.png|icon-512\\.png|whatsapp\\.svg)$",
+    headers: { "cache-control": "public, max-age=86400, stale-while-revalidate=604800" },
+    continue: true,
+  },
+];
+
 export default defineConfig({
   cloudflare: nitroPreset ? false : undefined,
-  plugins: nitroPreset ? [nitro({ preset: nitroPreset })] : [],
+  plugins: nitroPreset
+    ? [nitro({ preset: nitroPreset, vercel: { config: { routes: vercelStaticCacheRoutes } } } as any)]
+    : [],
   tanstackStart: {
     server: { entry: "server" },
   },
@@ -26,6 +43,11 @@ export default defineConfig({
             if (!id.includes("node_modules")) return undefined;
             if (id.includes("recharts")) return "chart-vendor";
             if (id.includes("embla-carousel-react")) return "carousel-vendor";
+            // Server-only Start internals must stay out of the shared vendor chunk, or the
+            // SSR bundle gets a circular chunk import ("createRequestHandler is not defined").
+            if (id.includes("@tanstack/start-server-core") || id.includes("@tanstack/react-start-server")) {
+              return undefined;
+            }
             if (id.includes("@tanstack")) return "tanstack-vendor";
             if (
               id.includes("@radix-ui") ||

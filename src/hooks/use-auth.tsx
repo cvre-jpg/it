@@ -1,12 +1,17 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { type AdminRole, type AdminUser, verifyAdminLogin } from "@/lib/admin-auth";
+import {
+  type AdminRole,
+  type AdminUser,
+  getAdminSession,
+  signOutAdmin,
+  verifyAdminLogin,
+} from "@/lib/admin-auth";
 
 type AuthCtx = {
   user: AdminUser | null;
   loading: boolean;
   isAdmin: boolean;
   role: AdminRole | null;
-  isSuperAdmin: boolean;
   signIn: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
 };
@@ -52,7 +57,6 @@ const Ctx = createContext<AuthCtx>({
   loading: true,
   isAdmin: false,
   role: null,
-  isSuperAdmin: false,
   signIn: async () => {},
   signOut: async () => {},
 });
@@ -65,22 +69,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (typeof window === "undefined") return;
 
+    let cancelled = false;
+    let parsed: StoredAdminSession | null = null;
+
     try {
       const raw = readStoredValue(STORAGE_KEY);
-      if (raw) {
-        const parsed = normalizeStoredSession(JSON.parse(raw));
-        if (parsed) {
-          setUser(parsed.user);
-          setSessionExpiresAt(parsed.expiresAt);
-          writeStoredValue(STORAGE_KEY, JSON.stringify(parsed));
-        } else {
-          removeStoredValue(STORAGE_KEY);
-        }
-      }
+      parsed = raw ? normalizeStoredSession(JSON.parse(raw)) : null;
+      if (raw && !parsed) removeStoredValue(STORAGE_KEY);
     } catch {
       removeStoredValue(STORAGE_KEY);
-    } finally {
+    }
+
+    if (!parsed) {
       setLoading(false);
+    } else {
+      // The httpOnly cookie is the real session; the stored copy is only a hint so that
+      // storefront visitors (no stored session) never trigger this server call.
+      const storedSession = parsed;
+      getAdminSession()
+        .then((serverUser) => {
+          if (cancelled) return;
+          if (serverUser) {
+            const session = { user: serverUser, expiresAt: storedSession.expiresAt };
+            setUser(serverUser);
+            setSessionExpiresAt(session.expiresAt);
+            writeStoredValue(STORAGE_KEY, JSON.stringify(session));
+          } else {
+            removeStoredValue(STORAGE_KEY);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) removeStoredValue(STORAGE_KEY);
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
     }
 
     const onStorage = (event: StorageEvent) => {
@@ -102,7 +125,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
 
     window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("storage", onStorage);
+    };
   }, []);
 
   useEffect(() => {
@@ -131,7 +157,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       loading,
       isAdmin: Boolean(user),
       role: user?.role ?? null,
-      isSuperAdmin: user?.role === "super_admin",
       signIn: async (email, password) => {
         const adminUser = await verifyAdminLogin(email, password);
         const session = createStoredSession(adminUser);
@@ -143,6 +168,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(null);
         setSessionExpiresAt(null);
         removeStoredValue(STORAGE_KEY);
+        await signOutAdmin().catch(() => undefined);
       },
     }),
     [loading, user],
@@ -182,10 +208,9 @@ function normalizeStoredUser(value: unknown): AdminUser | null {
   const candidate = value as Partial<AdminUser>;
   const email = typeof candidate.email === "string" ? candidate.email : "";
   const name = typeof candidate.name === "string" ? candidate.name : "Administrator";
-  const role: AdminRole =
-    candidate.role === "super_admin" ? "super_admin" : candidate.role === "attendant" ? "attendant" : "admin";
-
-  if (!email) return null;
+  // Only attendants exist now; a stored session from an old role is dropped.
+  if (!email || candidate.role !== "attendant") return null;
+  const role: AdminRole = "attendant";
 
   return {
     email,

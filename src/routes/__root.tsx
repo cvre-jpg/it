@@ -119,7 +119,6 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { name: "twitter:image", content: absoluteUrl("/logo.png") },
     ],
     links: [
-      { rel: "canonical", href: absoluteUrl("/") },
       { rel: "preconnect", href: "https://fonts.googleapis.com" },
       {
         rel: "preconnect",

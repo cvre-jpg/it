@@ -13,7 +13,20 @@ export type AnalyticsEventInput = {
   metadata?: Record<string, unknown> | null;
 };
 
-export async function ensureAnalyticsTables() {
+// Schema setup only needs to run once per server instance, not on every event.
+let analyticsTablesReady: Promise<void> | undefined;
+
+export function ensureAnalyticsTables() {
+  if (!analyticsTablesReady) {
+    analyticsTablesReady = createAnalyticsTables().catch((error) => {
+      analyticsTablesReady = undefined;
+      throw error;
+    });
+  }
+  return analyticsTablesReady;
+}
+
+async function createAnalyticsTables() {
   const { getNeonSql } = await import("./neon.server");
   const sql = getNeonSql();
 

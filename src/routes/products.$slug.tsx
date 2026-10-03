@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, notFound } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { fetchProductPageData } from "@/lib/products";
@@ -25,18 +25,28 @@ import { cn } from "@/lib/utils";
 import { ProductCard } from "@/components/product-card";
 import { DEFAULT_WHATSAPP_NUMBER } from "@/hooks/use-whatsapp-number";
 import useEmblaCarousel from "embla-carousel-react";
-import { absoluteUrl, buildMetaDescription, buildTitle, cleanText } from "@/lib/seo";
+import { absoluteUrl, buildMetaDescription, buildTitle, cleanText, serializeJsonLd } from "@/lib/seo";
 import { buildResponsiveImageAttrs, optimizeImageUrl } from "@/lib/images";
 import { Skeleton } from "@/components/ui/skeleton";
 
 export const Route = createFileRoute("/products/$slug")({
-  loader: async ({ params }) => fetchProductPageData(params.slug),
+  // Reuses the cached product instead of calling the server on every visit.
+  loader: async ({ context, params }) => {
+    const data = await context.queryClient.ensureQueryData({
+      queryKey: ["product-page", params.slug],
+      queryFn: () => fetchProductPageData(params.slug),
+      staleTime: 1000 * 60 * 10,
+    });
+    // A real 404 (not a 200 "not found" page) so search engines drop dead product URLs.
+    if (!data.product) throw notFound();
+    return data;
+  },
   pendingComponent: ProductPendingPage,
   pendingMs: 0,
   pendingMinMs: 0,
   head: ({ loaderData, params }) => {
-    const product = loaderData.product;
-    const title = product ? buildTitle(product.title) : buildTitle("Product");
+    const product = loaderData?.product ?? null;
+    const title = product ? buildTitle(cleanText(product.title)) : buildTitle("Product");
     const description = buildMetaDescription(
       product?.description ??
         `${product?.title ?? "Product"} at Shop ICT Gadgets. View price, availability and specifications.`,
@@ -93,39 +103,6 @@ const FALLBACK_DESCRIPTION = [
   '14.0" diagonal LED backlight FHD (1920x1080) Display | Intel HD Graphics 520',
   "Windows 10 Professional 64-bit / AC Adapter",
 ] as const;
-function firstMatch(input: string, pattern: RegExp) {
-  const match = input.match(pattern);
-  return match?.[1] ?? null;
-}
-
-function deriveScreenSize(title: string) {
-  return firstMatch(title, /(\d{1,2}(?:\.\d+)?)\s*(?:inch|in|”|")/i);
-}
-
-function deriveRam(title: string) {
-  return firstMatch(title, /(\d+)\s*gb\s*ram/i);
-}
-
-function deriveStorage(title: string) {
-  const storageMatches = [...title.matchAll(/(\d+\s*(?:gb|tb))(?:\s*ssd)?/gi)].map((match) => match[1]);
-  return storageMatches.find((value) => !/^(8|16|32)\s*gb$/i.test(value)) ?? storageMatches[0] ?? null;
-}
-
-function deriveProcessor(title: string) {
-  const match = title.match(/(core\s+ultra\s+\d+|ultra\s+\d+|core\s+i[3579]|ci[3579]|ryzen\s+\d+|celeron|pentium)/i)?.[1];
-  if (!match) return null;
-  return match
-    .replace(/\bci(\d)\b/i, "Core i$1")
-    .replace(/\bcore\s+/i, "Core ")
-    .replace(/\bultra\s+/i, "Ultra ")
-    .replace(/\bryzen\s+/i, "Ryzen ");
-}
-
-function deriveColour(title: string) {
-  const match = title.match(/\b(white|black|silver|grey|gray|blue)\b/i)?.[1];
-  if (!match) return null;
-  return match.charAt(0).toUpperCase() + match.slice(1).toLowerCase();
-}
 
 function deriveCondition(title: string, subcategory: string | null) {
   const source = `${title} ${subcategory ?? ""}`.toLowerCase();
@@ -133,82 +110,17 @@ function deriveCondition(title: string, subcategory: string | null) {
   return "New";
 }
 
-function normalizeMonitorSizeValue(...values: Array<string | null | undefined>) {
-  for (const value of values) {
-    const normalized = String(value ?? "").trim();
-    if (!normalized) continue;
-
-    const numericMatch = normalized.match(/(\d{1,3}(?:\.\d+)?)/);
-    if (numericMatch?.[1]) {
-      return numericMatch[1];
-    }
-  }
-
-  return "Not specified";
-}
-
 type ProductPagePayload = Awaited<ReturnType<typeof fetchProductPageData>>;
 type ProductRecord = NonNullable<ProductPagePayload["product"]>;
 
-function isMonitorProduct(product: ProductRecord | null | undefined) {
-  return normalizeValue(product?.categories?.name) === "monitors";
-}
-
+// Shows the specs JSON exactly as typed in the admin: every key, in its order, with its
+// own value. Nothing is invented or filled with "Not specified"; only blank values are skipped.
 function buildSpecRows(product: ProductRecord | null | undefined) {
   if (!product) return [] as Array<[string, string]>;
 
-  const specs = product.specs || {};
-  const title = product.title;
-  const categoryName = product.categories?.name || "Product";
-  const subcategory = product.subcategories?.length
-    ? product.subcategories.join(", ")
-    : product.subcategory || String(specs["Subcategory"] || "");
-  const derivedScreenSize = deriveScreenSize(title);
-  const derivedRam = deriveRam(title);
-  const derivedStorage = deriveStorage(title);
-  const derivedProcessor = deriveProcessor(title);
-  const derivedColour = deriveColour(title);
-  const derivedCondition = deriveCondition(title, product.subcategory);
-  const monitorProduct = isMonitorProduct(product);
-  const sizeValue = monitorProduct
-    ? normalizeMonitorSizeValue(specs["Size"], specs["Screen Size"], specs["Screen size (in)"], derivedScreenSize, title)
-    : String(specs["Size"] || specs["HDD size"] || specs["Storage"] || derivedStorage || "Not specified");
-  const baseSpecRows: Array<[string, string]> = [
-    ["Model Number", String(specs["Model Number"] || title)],
-    ["Features", String(specs["Features"] || subcategory || categoryName)],
-    ["Colour", String(specs["Colour"] || derivedColour || "Not specified")],
-    ["Condition", String(specs["Condition"] || derivedCondition)],
-    ["Size", sizeValue],
-  ];
-
-  if (!monitorProduct) {
-    baseSpecRows.push(
-      ["Operating system", String(specs["Operating system"] || (categoryName === "Laptops" ? "Windows 11" : "Not specified"))],
-      ["Processor", String(specs["Processor"] || derivedProcessor || "Not specified")],
-      ["RAM (GB)", String(specs["RAM (GB)"] || specs["RAM"] || derivedRam || "Not specified")],
-      ["Screen size (in)", String(specs["Screen size (in)"] || derivedScreenSize || "Not specified")],
-      ["SKU", String(specs["SKU"] || product.slug.toUpperCase())],
-    );
-  }
-
-  const displayedLabels = new Set(baseSpecRows.map(([label]) => label));
-  const extraSpecRows = Object.entries(specs)
-    .filter(([label, value]) => {
-      if (displayedLabels.has(label)) return false;
-      if (monitorProduct && ["Operating system", "Processor", "RAM (GB)", "RAM", "Screen size (in)", "Screen Size", "SKU"].includes(label)) {
-        return false;
-      }
-
-      const normalizedValue = String(value ?? "").trim();
-      return normalizedValue.length > 0 && normalizedValue.toLowerCase() !== "not specified";
-    })
-    .map(([label, value]) => [label, String(value)] as [string, string]);
-
-  return [...baseSpecRows, ...extraSpecRows];
-}
-
-function normalizeValue(value: string | null | undefined) {
-  return String(value ?? "").trim().toLowerCase();
+  return Object.entries(product.specs || {})
+    .map(([label, value]) => [label.trim(), String(value ?? "").trim()] as [string, string])
+    .filter(([label, value]) => label.length > 0 && value.length > 0);
 }
 
 function ProductPage() {
@@ -310,7 +222,7 @@ function ProductPage() {
     ? "More picks from across the store."
     : `More picks from ${product.categories?.name || "this category"}.`;
   const descriptionLines = product.description
-    ? product.description.split(/\n+/).filter(Boolean)
+    ? product.description.split(/(?:\r?\n|\\n)+/).map((line) => line.trim()).filter(Boolean)
     : [...FALLBACK_DESCRIPTION];
   const brand = product.brand || product.title.split(" ")[0] || "Brand";
   const waMsg = buildWaMessage([{ title: product.title, quantity: qty, price: Number(product.price) }]);
@@ -550,11 +462,11 @@ function ProductPage() {
     <div className="bg-white">
       <script
         type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(productStructuredData) }}
+        dangerouslySetInnerHTML={{ __html: serializeJsonLd(productStructuredData) }}
       />
       <script
         type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbStructuredData) }}
+        dangerouslySetInnerHTML={{ __html: serializeJsonLd(breadcrumbStructuredData) }}
       />
       <div className="site-desktop-width mx-auto px-4 pt-8 pb-[20px] md:px-6 md:pt-12 md:pb-[20px]">
         <nav className="mb-6 text-sm text-muted-foreground">
@@ -689,9 +601,9 @@ function ProductPage() {
                   {shareOpen ? shareMenu : null}
                 </div>
               </div>
-              <h1 className="mt-0.5 text-[13px] font-normal leading-[1.35] text-[#222222] [display:-webkit-box] [-webkit-line-clamp:3] [-webkit-box-orient:vertical] overflow-hidden">
+              <p className="mt-0.5 text-[13px] font-normal leading-[1.35] text-[#222222] [display:-webkit-box] [-webkit-line-clamp:3] [-webkit-box-orient:vertical] overflow-hidden">
                 {product.title}
-              </h1>
+              </p>
               <p className="mt-1.5 text-[10px] text-[#6B7280]">
                 by <span className="text-primary">{brand}</span>
               </p>
@@ -753,6 +665,9 @@ function ProductPage() {
 
                 <TabsContent value="specifications" className="mt-0">
                   <div className="overflow-hidden rounded-[8px] border border-[#d8dee6] bg-transparent">
+                    {specRows.length === 0 ? (
+                      <div className="px-4 py-2 text-[14px] text-[#6b7280]">No specifications listed.</div>
+                    ) : null}
                     {specRows.map(([label, value]) => (
                       <div
                         key={label}
@@ -788,6 +703,9 @@ function ProductPage() {
               <div>
                 <h2 className="mb-4 text-[18px] font-semibold text-[#111827]">Specifications</h2>
                 <div className="overflow-hidden rounded-[8px] border border-[#d8dee6] bg-transparent">
+                  {specRows.length === 0 ? (
+                    <div className="px-4 py-2 text-[14px] text-[#6b7280]">No specifications listed.</div>
+                  ) : null}
                   {specRows.map(([label, value]) => (
                     <div
                       key={label}

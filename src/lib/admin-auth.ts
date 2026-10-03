@@ -9,22 +9,14 @@ type AccessCodeInput = {
   code: string;
 };
 
-export type AdminRole = "attendant" | "admin" | "super_admin";
+// The admin area has a single role: attendants who list and manage products and the catalogue.
+export type AdminRole = "attendant";
 
 export type AdminUser = {
   email: string;
   name: string;
   role: AdminRole;
   isAdmin: true;
-};
-
-type AdminUserProfileInput = {
-  id?: string;
-  name: string;
-  email: string;
-  password?: string;
-  role: AdminRole;
-  is_active: boolean;
 };
 
 async function ensureAdminUsersTable() {
@@ -48,25 +40,27 @@ async function ensureAdminUsersTable() {
   `;
 }
 
-async function syncBootstrapAdminUsers() {
+// Bootstrap users come from env vars, which only change on redeploy, so syncing once
+// per server instance is enough (each sync runs several bcrypt hashes in the database).
+let bootstrapAdminUsersReady: Promise<void> | undefined;
+
+function syncBootstrapAdminUsers() {
+  if (!bootstrapAdminUsersReady) {
+    bootstrapAdminUsersReady = upsertBootstrapAdminUsers().catch((error) => {
+      bootstrapAdminUsersReady = undefined;
+      throw error;
+    });
+  }
+  return bootstrapAdminUsersReady;
+}
+
+async function upsertBootstrapAdminUsers() {
   const { getNeonSql } = await import("./neon.server");
   const sql = getNeonSql();
 
   await ensureAdminUsersTable();
 
   const bootstrapUsers = [
-    {
-      name: process.env.ADMIN_NAME || "Administrator",
-      email: process.env.ADMIN_EMAIL || "admin@shopictgadgets.co.ke",
-      password: process.env.ADMIN_PASSWORD || "changeme123",
-      role: "admin" as const,
-    },
-    {
-      name: process.env.SUPER_ADMIN_NAME || "Super Administrator",
-      email: process.env.SUPER_ADMIN_EMAIL || "superadmin@shopictgadgets.co.ke",
-      password: process.env.SUPER_ADMIN_PASSWORD || "superchange123",
-      role: "super_admin" as const,
-    },
     {
       name: process.env.ATTENDANT_NAME || "Attendant",
       email: process.env.ATTENDANT_EMAIL || "attendant@shopictgadgets.co.ke",
@@ -104,13 +98,47 @@ async function syncBootstrapAdminUsers() {
   }
 }
 
+// Best-effort brute-force throttle. It is per server instance, so it slows attackers
+// down rather than being a hard global limit.
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_FAILURES = 10;
+const loginFailures = new Map<string, { count: number; resetAt: number }>();
+
+function isLoginThrottled(key: string) {
+  const entry = loginFailures.get(key);
+  if (!entry) return false;
+  if (entry.resetAt <= Date.now()) {
+    loginFailures.delete(key);
+    return false;
+  }
+  return entry.count >= LOGIN_MAX_FAILURES;
+}
+
+function recordLoginFailure(key: string) {
+  const entry = loginFailures.get(key);
+  if (!entry || entry.resetAt <= Date.now()) {
+    loginFailures.set(key, { count: 1, resetAt: Date.now() + LOGIN_WINDOW_MS });
+    return;
+  }
+  entry.count += 1;
+}
+
 const verifyAdminLoginServer = createServerFn({ method: "POST" }).handler(async ({ data }) => {
   const input = data as LoginInput;
   const { getNeonSql } = await import("./neon.server");
+  const { getRequestIP, setCookie } = await import("./request.server");
+  const { ADMIN_SESSION_COOKIE, ADMIN_SESSION_TTL_SECONDS, createAdminSessionToken } = await import(
+    "./admin-session.server"
+  );
   const sql = getNeonSql();
 
   const email = input.email.trim().toLowerCase();
   const password = input.password;
+  const throttleKey = `${getRequestIP({ xForwardedFor: true }) ?? "unknown"}:${email}`;
+
+  if (isLoginThrottled(throttleKey)) {
+    throw new Error("Too many failed attempts. Try again in 15 minutes.");
+  }
 
   await syncBootstrapAdminUsers();
 
@@ -119,21 +147,48 @@ const verifyAdminLoginServer = createServerFn({ method: "POST" }).handler(async 
     from admin_users
     where lower(email) = ${email}
       and is_active = true
+      and role = 'attendant'
       and crypt(${password}, password_hash) = password_hash
     limit 1
   `;
 
   const user = rows[0];
   if (user) {
-    return {
+    loginFailures.delete(throttleKey);
+    const adminUser = {
       email: String(user.email),
       name: String(user.name),
-      role: normalizeAdminRole(user.role),
+      role: "attendant",
       isAdmin: true,
     } satisfies AdminUser;
+
+    setCookie(ADMIN_SESSION_COOKIE, await createAdminSessionToken(adminUser), {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path: "/",
+      maxAge: ADMIN_SESSION_TTL_SECONDS,
+    });
+
+    return adminUser;
   }
 
+  recordLoginFailure(throttleKey);
   throw new Error("Invalid admin credentials.");
+});
+
+// Returns the signed-in admin from the httpOnly cookie, or null.
+const getAdminSessionServer = createServerFn({ method: "POST" }).handler(async () => {
+  const { getCookie } = await import("./request.server");
+  const { ADMIN_SESSION_COOKIE, readAdminSessionToken } = await import("./admin-session.server");
+  return readAdminSessionToken(getCookie(ADMIN_SESSION_COOKIE));
+});
+
+const signOutAdminServer = createServerFn({ method: "POST" }).handler(async () => {
+  const { deleteCookie } = await import("./request.server");
+  const { ADMIN_SESSION_COOKIE } = await import("./admin-session.server");
+  deleteCookie(ADMIN_SESSION_COOKIE, { path: "/" });
+  return { ok: true };
 });
 
 const getAdminAccessConfigServer = createServerFn({ method: "GET" }).handler(async () => {
@@ -161,158 +216,16 @@ const verifyAdminAccessCodeServer = createServerFn({ method: "POST" }).handler(a
   };
 });
 
-const listAdminUsersServer = createServerFn({ method: "POST" }).handler(async () => {
-  const { getNeonSql } = await import("./neon.server");
-  const sql = getNeonSql();
-
-  await syncBootstrapAdminUsers();
-
-  const rows = await sql`
-    select id, name, email, role, is_active, is_protected, source, created_at, updated_at
-    from admin_users
-    order by
-      case when role = 'super_admin' then 0 else 1 end,
-      created_at asc
-  `;
-
-  return rows.map((row: any) => ({
-    id: String(row.id),
-    name: String(row.name ?? ""),
-    email: String(row.email ?? ""),
-    role: normalizeAdminRole(row.role),
-    is_active: Boolean(row.is_active),
-    is_protected: Boolean(row.is_protected),
-    source: String(row.source ?? "manual"),
-    created_at: String(row.created_at),
-    updated_at: String(row.updated_at),
-}));
-});
-
-function normalizeAdminRole(value: unknown): AdminRole {
-  if (value === "super_admin") return "super_admin";
-  if (value === "attendant") return "attendant";
-  return "admin";
-}
-
-const upsertAdminUserServer = createServerFn({ method: "POST" }).handler(async ({ data }) => {
-  const input = data as AdminUserProfileInput;
-  const { getNeonSql } = await import("./neon.server");
-  const sql = getNeonSql();
-
-  await syncBootstrapAdminUsers();
-
-  const email = input.email.trim().toLowerCase();
-  if (!email) throw new Error("Email is required.");
-  if (!input.name.trim()) throw new Error("Name is required.");
-
-  if (input.id) {
-    const existingRows = await sql`
-      select id, is_protected, password_hash
-      from admin_users
-      where id = ${input.id}
-      limit 1
-    `;
-    const existing = existingRows[0];
-    if (!existing) throw new Error("User profile not found.");
-
-    if (input.password?.trim()) {
-      await sql`
-        update admin_users
-        set
-          name = ${input.name.trim()},
-          email = ${email},
-          role = ${input.role},
-          is_active = ${input.is_active},
-          password_hash = crypt(${input.password}, gen_salt('bf')),
-          updated_at = now()
-        where id = ${input.id}
-      `;
-    } else {
-      await sql`
-        update admin_users
-        set
-          name = ${input.name.trim()},
-          email = ${email},
-          role = ${input.role},
-          is_active = ${input.is_active},
-          updated_at = now()
-        where id = ${input.id}
-      `;
-    }
-
-    return { ok: true };
-  }
-
-  if (!input.password?.trim()) throw new Error("Password is required for a new admin profile.");
-
-  await sql`
-    insert into admin_users (name, email, password_hash, role, is_active, is_protected, source)
-    values (
-      ${input.name.trim()},
-      ${email},
-      crypt(${input.password}, gen_salt('bf')),
-      ${input.role},
-      ${input.is_active},
-      false,
-      'manual'
-    )
-  `;
-
-  return { ok: true };
-});
-
-const setAdminUserActiveServer = createServerFn({ method: "POST" }).handler(async ({ data }) => {
-  const input = data as { id: string; is_active: boolean };
-  const { getNeonSql } = await import("./neon.server");
-  const sql = getNeonSql();
-
-  await syncBootstrapAdminUsers();
-
-  const rows = await sql`
-    select is_protected
-    from admin_users
-    where id = ${input.id}
-    limit 1
-  `;
-  const user = rows[0];
-  if (!user) throw new Error("User profile not found.");
-  if (Boolean(user.is_protected) && !input.is_active) {
-    throw new Error("Protected system admins cannot be deactivated.");
-  }
-
-  await sql`
-    update admin_users
-    set is_active = ${input.is_active}, updated_at = now()
-    where id = ${input.id}
-  `;
-  return { ok: true };
-});
-
-const deleteAdminUserServer = createServerFn({ method: "POST" }).handler(async ({ data }) => {
-  const input = data as { id: string };
-  const { getNeonSql } = await import("./neon.server");
-  const sql = getNeonSql();
-
-  await syncBootstrapAdminUsers();
-
-  const rows = await sql`
-    select is_protected
-    from admin_users
-    where id = ${input.id}
-    limit 1
-  `;
-  const user = rows[0];
-  if (!user) throw new Error("User profile not found.");
-  if (Boolean(user.is_protected)) {
-    throw new Error("Protected system admins cannot be deleted.");
-  }
-
-  await sql`delete from admin_users where id = ${input.id}`;
-  return { ok: true };
-});
-
 export async function verifyAdminLogin(email: string, password: string) {
   return verifyAdminLoginServer({ data: { email, password } }) as Promise<AdminUser>;
+}
+
+export async function getAdminSession() {
+  return getAdminSessionServer() as Promise<AdminUser | null>;
+}
+
+export async function signOutAdmin() {
+  return signOutAdminServer();
 }
 
 export async function getAdminAccessConfig() {
@@ -323,18 +236,4 @@ export async function verifyAdminAccessCode(code: string) {
   return verifyAdminAccessCodeServer({ data: { code } });
 }
 
-export async function listAdminUsers() {
-  return listAdminUsersServer();
-}
 
-export async function upsertAdminUser(input: AdminUserProfileInput) {
-  return upsertAdminUserServer({ data: input });
-}
-
-export async function setAdminUserActive(id: string, is_active: boolean) {
-  return setAdminUserActiveServer({ data: { id, is_active } });
-}
-
-export async function deleteAdminUser(id: string) {
-  return deleteAdminUserServer({ data: { id } });
-}

@@ -1,4 +1,4 @@
-const CACHE_VERSION = "v5";
+const CACHE_VERSION = "v6";
 const APP_SHELL_CACHE = `shopict-app-shell-${CACHE_VERSION}`;
 const PAGE_CACHE = `shopict-pages-${CACHE_VERSION}`;
 const ASSET_CACHE = `shopict-assets-${CACHE_VERSION}`;
@@ -48,44 +48,6 @@ self.addEventListener("fetch", (event) => {
   }
 });
 
-self.addEventListener("push", (event) => {
-  const payload = event.data ? safeJson(event.data.text()) : {};
-  const title = payload.title || "Shop ICT Gadgets";
-  const options = {
-    body: payload.body || "You have a new notification.",
-    icon: "/app-icon.jpg",
-    badge: "/app-icon.jpg",
-    tag: payload.tag || "shopict-notification",
-    data: {
-      url: payload.url || "/admin/notifications",
-    },
-  };
-
-  event.waitUntil(self.registration.showNotification(title, options));
-});
-
-self.addEventListener("notificationclick", (event) => {
-  event.notification.close();
-  const targetUrl = event.notification.data?.url || "/admin/notifications";
-
-  event.waitUntil(
-    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
-      for (const client of clients) {
-        if ("focus" in client) {
-          client.navigate(targetUrl);
-          return client.focus();
-        }
-      }
-
-      if (self.clients.openWindow) {
-        return self.clients.openWindow(targetUrl);
-      }
-
-      return undefined;
-    }),
-  );
-});
-
 async function handleNavigationRequest(request) {
   try {
     const response = await fetch(request);
@@ -109,19 +71,18 @@ async function handleNavigationRequest(request) {
   }
 }
 
+// Cache-first: build assets are content-hashed and public files change only with a
+// CACHE_VERSION bump, so a cached copy never needs a background re-download.
 async function handleAssetRequest(request) {
   const cached = await caches.match(request);
-  const networkFetch = fetch(request)
-    .then(async (response) => {
-      if (isCacheableResponse(response)) {
-        const cache = await caches.open(ASSET_CACHE);
-        await cache.put(request, response.clone());
-      }
-      return response;
-    })
-    .catch(() => cached);
+  if (cached) return cached;
 
-  return cached || networkFetch;
+  const response = await fetch(request);
+  if (isCacheableResponse(response)) {
+    const cache = await caches.open(ASSET_CACHE);
+    await cache.put(request, response.clone());
+  }
+  return response;
 }
 
 function isCacheableAssetRequest(request, isSameOrigin, isExternalAsset) {
@@ -134,12 +95,4 @@ function isCacheableAssetRequest(request, isSameOrigin, isExternalAsset) {
 
 function isCacheableResponse(response) {
   return Boolean(response) && (response.status === 200 || response.type === "opaque");
-}
-
-function safeJson(value) {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return {};
-  }
 }

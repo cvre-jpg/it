@@ -42,7 +42,6 @@ type Form = {
 const DEFAULT_SPECS_TEMPLATE = `{
   "Model Number": "Hp Victus -16 inch core i5 13th gen 16gb ram / 512 ssd Rtx 3050 6gb",
   "Features": "Ex-UK Laptops",
-  "Colour": "Not specified",
   "Condition": "Refurbished",
   "Size": "6gb",
   "Operating system": "Windows 11",
@@ -256,6 +255,10 @@ export function AdminProductsPage() {
       toast.error("Specs must be valid JSON");
       return;
     }
+    if (!parsedSpecs || typeof parsedSpecs !== "object" || Array.isArray(parsedSpecs)) {
+      toast.error('Specs must be a JSON object, e.g. { "RAM": "16GB" }');
+      return;
+    }
 
     const parsedSubcategories = Array.from(
       new Set(
@@ -280,11 +283,9 @@ export function AdminProductsPage() {
       }
     }
 
+    // The colour picker only adds to the specs; it never deletes keys typed in the JSON.
     if (draft.colors.length > 0) {
       parsedSpecs["Available colours"] = draft.colors.join(", ");
-    } else {
-      delete parsedSpecs["Available colours"];
-      delete parsedSpecs["Available colors"];
     }
 
     try {

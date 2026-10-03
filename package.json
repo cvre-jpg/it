@@ -15,7 +15,9 @@
     "seed:products:json": "node scripts/seed-products-from-json.mjs",
     "seed:products": "node scripts/seed-products-from-csv.mjs",
     "seed:products:dry": "node scripts/seed-products-from-csv.mjs --dry-run",
-    "seed:products:sql": "node scripts/seed-products-from-csv.mjs --sql --out sql/seed-products-from-csv.sql"
+    "seed:products:sql": "node scripts/seed-products-from-csv.mjs --sql --out sql/seed-products-from-csv.sql",
+    "db:backup": "node scripts/db-backup.mjs",
+    "db:verify": "node scripts/db-verify.mjs"
   },
   "dependencies": {
     "@cloudflare/vite-plugin": "^1.25.5",
@@ -59,6 +61,7 @@
     "embla-carousel-react": "^8.6.0",
     "input-otp": "^1.4.2",
     "lucide-react": "^0.575.0",
+    "postgres": "^3.4.9",
     "react": "^19.2.0",
     "react-day-picker": "^9.14.0",
     "react-dom": "^19.2.0",
